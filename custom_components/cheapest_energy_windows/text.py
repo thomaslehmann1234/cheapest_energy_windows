@@ -92,6 +92,42 @@ async def async_setup_entry(
             "mdi:battery",
             None
         ),
+        CEWText(
+            hass,
+            config_entry,
+            "pv_forecast_remaining_today_sensor",
+            "PV Forecast Remaining Today Sensor",
+            "sensor.solcast_pv_forecast_forecast_remaining_today",
+            "mdi:solar-power",
+            r"^(sensor\.[a-z0-9_]+|not_configured)$"
+        ),
+        CEWText(
+            hass,
+            config_entry,
+            "pv_forecast_tomorrow_sensor",
+            "PV Forecast Tomorrow Sensor",
+            "sensor.solcast_pv_forecast_forecast_tomorrow",
+            "mdi:solar-power",
+            r"^(sensor\.[a-z0-9_]+|not_configured)$"
+        ),
+        CEWText(
+            hass,
+            config_entry,
+            "battery_total_capacity_sensor",
+            "Battery Total Capacity Sensor",
+            "not_configured",
+            "mdi:battery-high",
+            r"^(sensor\.[a-z0-9_]+|not_configured)$"
+        ),
+        CEWText(
+            hass,
+            config_entry,
+            "winter_months",
+            "Winter Months",
+            "11,12,1,2",
+            "mdi:calendar-month",
+            r"^[0-9,\s]+$"
+        ),
         # Battery operation automations
         CEWText(
             hass,
@@ -205,9 +241,16 @@ class CEWText(TextEntity):
 
         self.async_write_ha_state()
 
-        # Only trigger coordinator update for price sensor entity changes
-        # Battery sensor entities are just for display/tracking
-        if self._key == "price_sensor_entity":
+        # Trigger recalculation for dynamic sensor references.
+        refresh_keys = {
+            "price_sensor_entity",
+            "battery_soc_sensor",
+            "battery_total_capacity_sensor",
+            "pv_forecast_remaining_today_sensor",
+            "pv_forecast_tomorrow_sensor",
+            "winter_months",
+        }
+        if self._key in refresh_keys:
             if DOMAIN in self.hass.data and self._config_entry.entry_id in self.hass.data[DOMAIN]:
                 coordinator = self.hass.data[DOMAIN][self._config_entry.entry_id].get("coordinator")
                 if coordinator:

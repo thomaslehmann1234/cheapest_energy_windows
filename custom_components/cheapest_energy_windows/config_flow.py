@@ -54,6 +54,15 @@ from .const import (
     DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD,
     DEFAULT_MIN_PRICE_DIFFERENCE,
     DEFAULT_PRICE_OVERRIDE_THRESHOLD,
+    DEFAULT_PV_FORECAST_ENABLED,
+    DEFAULT_PV_SOURCE,
+    DEFAULT_SOC_TARGET_SUNRISE,
+    DEFAULT_PV_FORECAST_REMAINING_TODAY_SENSOR,
+    DEFAULT_PV_FORECAST_TOMORROW_SENSOR,
+    DEFAULT_BATTERY_TOTAL_CAPACITY_SENSOR,
+    DEFAULT_WINTER_RESERVE_ENABLED,
+    DEFAULT_WINTER_MIN_SOC,
+    DEFAULT_WINTER_MONTHS,
     PRICING_15_MINUTES,
     PRICING_1_HOUR,
     LOGGER_NAME,
@@ -446,7 +455,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self.data.update(battery_data)
                 self.options.update(battery_data)
 
-            return await self.async_step_battery_operations()
+            return await self.async_step_pv_forecast()
 
         return self.async_show_form(
             step_id="battery",
@@ -485,6 +494,83 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             description_placeholders={
                 "info": "Optional: Configure battery system sensors for monitoring and automation.\n\nLeave fields empty to skip battery configuration.\n\nYou can configure these later through the integration settings."
+            },
+        )
+
+    async def async_step_pv_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure PV forecast integration."""
+        if user_input is not None:
+            sensor_defaults = {
+                "pv_forecast_remaining_today_sensor": DEFAULT_PV_FORECAST_REMAINING_TODAY_SENSOR,
+                "pv_forecast_tomorrow_sensor": DEFAULT_PV_FORECAST_TOMORROW_SENSOR,
+                "battery_total_capacity_sensor": DEFAULT_BATTERY_TOTAL_CAPACITY_SENSOR,
+            }
+            normalized_input = dict(user_input)
+            for key, default_value in sensor_defaults.items():
+                normalized_input[key] = normalized_input.get(key) or default_value
+
+            normalized_input["winter_months"] = normalized_input.get("winter_months") or DEFAULT_WINTER_MONTHS
+            self.options.update(normalized_input)
+            return await self.async_step_battery_operations()
+
+        return self.async_show_form(
+            step_id="pv_forecast",
+            data_schema=vol.Schema({
+                vol.Required("pv_forecast_enabled", default=DEFAULT_PV_FORECAST_ENABLED): selector.BooleanSelector(),
+                vol.Required("pv_source", default=DEFAULT_PV_SOURCE): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"label": "Solcast", "value": "solcast"},
+                            {"label": "Generic", "value": "generic"},
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required("soc_target_sunrise", default=DEFAULT_SOC_TARGET_SUNRISE): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=100,
+                        step=1,
+                        unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional("pv_forecast_remaining_today_sensor"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        multiple=False,
+                    )
+                ),
+                vol.Optional("pv_forecast_tomorrow_sensor"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        multiple=False,
+                    )
+                ),
+                vol.Optional("battery_total_capacity_sensor"): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        multiple=False,
+                    )
+                ),
+                vol.Required("winter_reserve_enabled", default=DEFAULT_WINTER_RESERVE_ENABLED): selector.BooleanSelector(),
+                vol.Required("winter_min_soc", default=DEFAULT_WINTER_MIN_SOC): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=100,
+                        step=1,
+                        unit_of_measurement="%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required("winter_months", default=DEFAULT_WINTER_MONTHS): cv.string,
+            }),
+            description_placeholders={
+                "info": "Optional PV optimization: reduce grid charging when forecast solar generation can cover the battery target.\n\n"
+                        "Defaults are Solcast-first and can be changed later from CEW entities.\n"
+                        "Winter months use comma-separated month numbers, e.g. 11,12,1,2."
             },
         )
 

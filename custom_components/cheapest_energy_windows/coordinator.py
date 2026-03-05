@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+import math
 import logging
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,17 @@ from .const import (
     DEFAULT_BASE_USAGE_IDLE_STRATEGY,
     DEFAULT_BASE_USAGE_DISCHARGE_STRATEGY,
     DEFAULT_BASE_USAGE_AGGRESSIVE_STRATEGY,
+    DEFAULT_MIN_BUY_PRICE_DIFF_ENABLED,
+    DEFAULT_PRICE_FORMULA,
+    DEFAULT_PV_FORECAST_ENABLED,
+    DEFAULT_PV_SOURCE,
+    DEFAULT_SOC_TARGET_SUNRISE,
+    DEFAULT_PV_FORECAST_REMAINING_TODAY_SENSOR,
+    DEFAULT_PV_FORECAST_TOMORROW_SENSOR,
+    DEFAULT_BATTERY_TOTAL_CAPACITY_SENSOR,
+    DEFAULT_WINTER_RESERVE_ENABLED,
+    DEFAULT_WINTER_MIN_SOC,
+    DEFAULT_WINTER_MONTHS,
     PREFIX,
 )
 
@@ -62,6 +74,21 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._last_price_update: Optional[datetime] = self._persistent_state["last_price_update"]
         self._last_config_update: Optional[datetime] = self._persistent_state["last_config_update"]
         self._previous_config_hash: Optional[str] = self._persistent_state["previous_config_hash"]
+
+    def _get_entity_float(self, entity_id: str | None) -> Optional[float]:
+        """Read a float state from an entity."""
+        if not entity_id or entity_id in {"", "not_configured", "unknown", "unavailable"}:
+            return None
+        entity_state = self.hass.states.get(entity_id)
+        if not entity_state:
+            return None
+        try:
+            value = float(entity_state.state)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        return value
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from price sensor."""
@@ -255,6 +282,7 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "min_spread_discharge": float(options.get("min_spread_discharge", DEFAULT_MIN_SPREAD_DISCHARGE)),
             "aggressive_discharge_spread": float(options.get("aggressive_discharge_spread", DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD)),
             "min_price_difference": float(options.get("min_price_difference", DEFAULT_MIN_PRICE_DIFFERENCE)),
+            "min_buy_price_diff_enabled": bool(options.get("min_buy_price_diff_enabled", DEFAULT_MIN_BUY_PRICE_DIFF_ENABLED)),
             "additional_cost": float(options.get("additional_cost", DEFAULT_ADDITIONAL_COST)),
             "tax": float(options.get("tax", DEFAULT_TAX)),
             "vat": float(options.get("vat", DEFAULT_VAT_RATE)),
@@ -279,7 +307,10 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "min_spread_discharge_tomorrow": float(options.get("min_spread_discharge_tomorrow", DEFAULT_MIN_SPREAD_DISCHARGE)),
             "aggressive_discharge_spread_tomorrow": float(options.get("aggressive_discharge_spread_tomorrow", DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD)),
             "min_price_difference_tomorrow": float(options.get("min_price_difference_tomorrow", DEFAULT_MIN_PRICE_DIFFERENCE)),
+            "min_buy_price_diff_enabled_tomorrow": bool(options.get("min_buy_price_diff_enabled_tomorrow", DEFAULT_MIN_BUY_PRICE_DIFF_ENABLED)),
             "price_override_threshold_tomorrow": float(options.get("price_override_threshold_tomorrow", DEFAULT_PRICE_OVERRIDE_THRESHOLD)),
+            "soc_target_sunrise": float(options.get("soc_target_sunrise", DEFAULT_SOC_TARGET_SUNRISE)),
+            "winter_min_soc": float(options.get("winter_min_soc", DEFAULT_WINTER_MIN_SOC)),
 
             # Boolean values (switches)
             "automation_enabled": bool(options.get("automation_enabled", True)),
@@ -293,6 +324,8 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "time_override_enabled_tomorrow": bool(options.get("time_override_enabled_tomorrow", False)),
             "calculation_window_enabled": bool(options.get("calculation_window_enabled", False)),
             "calculation_window_enabled_tomorrow": bool(options.get("calculation_window_enabled_tomorrow", False)),
+            "pv_forecast_enabled": bool(options.get("pv_forecast_enabled", DEFAULT_PV_FORECAST_ENABLED)),
+            "winter_reserve_enabled": bool(options.get("winter_reserve_enabled", DEFAULT_WINTER_RESERVE_ENABLED)),
             "notify_automation_disabled": bool(options.get("notify_automation_disabled", False)),
             "notify_charging": bool(options.get("notify_charging", True)),
             "notify_discharge": bool(options.get("notify_discharge", True)),
@@ -301,8 +334,18 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             # String values (selects)
             "pricing_window_duration": options.get("pricing_window_duration", "15_minutes"),
+            "price_formula": options.get("price_formula", DEFAULT_PRICE_FORMULA),
             "time_override_mode": options.get("time_override_mode", "charge"),
             "time_override_mode_tomorrow": options.get("time_override_mode_tomorrow", "charge"),
+            "pv_source": options.get("pv_source", DEFAULT_PV_SOURCE),
+            "pv_forecast_remaining_today_sensor": options.get("pv_forecast_remaining_today_sensor", DEFAULT_PV_FORECAST_REMAINING_TODAY_SENSOR),
+            "pv_forecast_tomorrow_sensor": options.get("pv_forecast_tomorrow_sensor", DEFAULT_PV_FORECAST_TOMORROW_SENSOR),
+            "battery_total_capacity_sensor": options.get("battery_total_capacity_sensor", DEFAULT_BATTERY_TOTAL_CAPACITY_SENSOR),
+            "winter_months": options.get("winter_months", DEFAULT_WINTER_MONTHS),
+            "battery_soc_sensor": options.get(
+                "battery_soc_sensor",
+                self.config_entry.data.get("battery_soc_sensor", "not_configured"),
+            ),
 
             # Time values
             "time_override_start": options.get("time_override_start", DEFAULT_TIME_OVERRIDE_START),
@@ -316,6 +359,27 @@ class CEWCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "quiet_hours_start": options.get("quiet_hours_start", DEFAULT_QUIET_START),
             "quiet_hours_end": options.get("quiet_hours_end", DEFAULT_QUIET_END),
         }
+
+        # Dynamic sensor data for PV-aware planning
+        config["current_soc"] = self._get_entity_float(config.get("battery_soc_sensor"))
+        config["battery_capacity_kwh"] = self._get_entity_float(config.get("battery_total_capacity_sensor"))
+        config["pv_forecast_remaining_today_kwh"] = self._get_entity_float(config.get("pv_forecast_remaining_today_sensor"))
+        config["pv_forecast_tomorrow_kwh"] = self._get_entity_float(config.get("pv_forecast_tomorrow_sensor"))
+
+        # Parse winter months from CSV text
+        winter_months_raw = str(config.get("winter_months", DEFAULT_WINTER_MONTHS))
+        parsed_months: list[int] = []
+        for token in winter_months_raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                month = int(token)
+            except ValueError:
+                continue
+            if 1 <= month <= 12:
+                parsed_months.append(month)
+        config["winter_months_list"] = parsed_months or [11, 12, 1, 2]
 
         return config
 

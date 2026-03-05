@@ -34,6 +34,8 @@ from .const import (
     DEFAULT_BATTERY_MIN_SOC_DISCHARGE,
     DEFAULT_BATTERY_MIN_SOC_AGGRESSIVE_DISCHARGE,
     DEFAULT_PRICE_OVERRIDE_THRESHOLD,
+    DEFAULT_SOC_TARGET_SUNRISE,
+    DEFAULT_WINTER_MIN_SOC,
 )
 
 _LOGGER = logging.getLogger(LOGGER_NAME)
@@ -142,6 +144,40 @@ async def async_setup_entry(
             0, 100, DEFAULT_BATTERY_MIN_SOC_AGGRESSIVE_DISCHARGE, 1, "%",
             "mdi:battery-alert", NumberMode.BOX
         ),
+        CEWNumber(
+            hass, config_entry, "percentile_threshold", "Percentile Threshold",
+            1, 50, DEFAULT_CHEAP_PERCENTILE, 1, "%",
+            "mdi:percent-outline", NumberMode.BOX,
+            linked_keys=["cheap_percentile", "expensive_percentile"],
+        ),
+        CEWNumber(
+            hass, config_entry, "min_profit_charge", "Min Profit Charge",
+            0, 200, DEFAULT_MIN_SPREAD, 1, "%",
+            "mdi:chart-line-variant", NumberMode.BOX,
+            linked_keys=["min_spread"],
+        ),
+        CEWNumber(
+            hass, config_entry, "min_profit_discharge", "Min Profit Discharge",
+            0, 200, DEFAULT_MIN_SPREAD_DISCHARGE, 1, "%",
+            "mdi:chart-line-variant", NumberMode.BOX,
+            linked_keys=["min_spread_discharge"],
+        ),
+        CEWNumber(
+            hass, config_entry, "min_profit_discharge_aggressive", "Min Profit Discharge Aggressive",
+            0, 300, DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD, 1, "%",
+            "mdi:chart-line-variant", NumberMode.BOX,
+            linked_keys=["aggressive_discharge_spread"],
+        ),
+        CEWNumber(
+            hass, config_entry, "soc_target_sunrise", "SOC Target Sunrise",
+            0, 100, DEFAULT_SOC_TARGET_SUNRISE, 1, "%",
+            "mdi:white-balance-sunny", NumberMode.BOX
+        ),
+        CEWNumber(
+            hass, config_entry, "winter_min_soc", "Winter Min SOC",
+            0, 100, DEFAULT_WINTER_MIN_SOC, 1, "%",
+            "mdi:snowflake", NumberMode.BOX
+        ),
     ])
 
     # Tomorrow's configuration
@@ -155,16 +191,30 @@ async def async_setup_entry(
         ("aggressive_discharge_spread_tomorrow", "Aggressive Discharge Spread Tomorrow", DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD, 300, "%"),
         ("min_price_difference_tomorrow", "Min Price Difference Tomorrow", DEFAULT_MIN_PRICE_DIFFERENCE, 0.5, "EUR/kWh"),
         ("price_override_threshold_tomorrow", "Price Override Threshold Tomorrow", DEFAULT_PRICE_OVERRIDE_THRESHOLD, 0.5, "EUR/kWh"),
+        ("percentile_threshold_tomorrow", "Percentile Threshold Tomorrow", DEFAULT_CHEAP_PERCENTILE, 50, "%"),
+        ("min_profit_charge_tomorrow", "Min Profit Charge Tomorrow", DEFAULT_MIN_SPREAD, 200, "%"),
+        ("min_profit_discharge_tomorrow", "Min Profit Discharge Tomorrow", DEFAULT_MIN_SPREAD_DISCHARGE, 200, "%"),
+        ("min_profit_discharge_aggressive_tomorrow", "Min Profit Discharge Aggressive Tomorrow", DEFAULT_AGGRESSIVE_DISCHARGE_SPREAD, 300, "%"),
     ]
 
     for key, name, default, max_val, unit in tomorrow_configs:
         min_val = 1 if "percentile" in key else 0 if "windows" in key else 0
         step = 1 if "%" in unit or "windows" in unit else 0.01
+        linked_keys = None
+        if key == "percentile_threshold_tomorrow":
+            linked_keys = ["cheap_percentile_tomorrow", "expensive_percentile_tomorrow"]
+        elif key == "min_profit_charge_tomorrow":
+            linked_keys = ["min_spread_tomorrow"]
+        elif key == "min_profit_discharge_tomorrow":
+            linked_keys = ["min_spread_discharge_tomorrow"]
+        elif key == "min_profit_discharge_aggressive_tomorrow":
+            linked_keys = ["aggressive_discharge_spread_tomorrow"]
         numbers.append(
             CEWNumber(
                 hass, config_entry, key, name,
                 min_val, max_val, default, step, unit,
-                "mdi:calendar-clock", NumberMode.BOX
+                "mdi:calendar-clock", NumberMode.BOX,
+                linked_keys=linked_keys,
             )
         )
 
@@ -187,6 +237,7 @@ class CEWNumber(NumberEntity):
         unit: str,
         icon: str,
         mode: NumberMode,
+        linked_keys: list[str] | None = None,
     ) -> None:
         """Initialize the number entity."""
         self.hass = hass
@@ -201,9 +252,14 @@ class CEWNumber(NumberEntity):
         self._attr_icon = icon
         self._attr_mode = mode
         self._attr_has_entity_name = False
+        self._linked_keys = linked_keys or []
 
         # Load value from config entry options, fallback to initial
-        self._attr_native_value = config_entry.options.get(key, initial_value)
+        self._attr_native_value = initial_value
+        for candidate_key in [key, *self._linked_keys]:
+            if candidate_key in config_entry.options:
+                self._attr_native_value = config_entry.options[candidate_key]
+                break
 
     @property
     def entity_registry_enabled_default(self) -> bool:
@@ -228,6 +284,8 @@ class CEWNumber(NumberEntity):
         # Save to config entry options
         new_options = dict(self._config_entry.options)
         new_options[self._key] = value
+        for linked_key in self._linked_keys:
+            new_options[linked_key] = value
         self.hass.config_entries.async_update_entry(
             self._config_entry,
             options=new_options
@@ -237,7 +295,8 @@ class CEWNumber(NumberEntity):
 
         # Only trigger coordinator update for numbers that affect calculations
         # Check against the centralized registry of calculation-affecting keys
-        if self._key in CALCULATION_AFFECTING_KEYS:
+        affected_keys = [self._key, *self._linked_keys]
+        if any(key in CALCULATION_AFFECTING_KEYS for key in affected_keys):
             if DOMAIN in self.hass.data and self._config_entry.entry_id in self.hass.data[DOMAIN]:
                 coordinator = self.hass.data[DOMAIN][self._config_entry.entry_id].get("coordinator")
                 if coordinator:

@@ -117,6 +117,32 @@
           "battery_power_sensor": "Sensor showing current battery power in W (positive=charging, negative=discharging)"
         }
       },
+      "pv_forecast": {
+        "title": "PV Forecast Optimization (Optional)",
+        "description": "{info}",
+        "data": {
+          "pv_forecast_enabled": "Enable PV Forecast Optimization",
+          "pv_source": "PV Source",
+          "soc_target_sunrise": "SOC Target at Sunrise (%)",
+          "pv_forecast_remaining_today_sensor": "PV Forecast Remaining Today Sensor",
+          "pv_forecast_tomorrow_sensor": "PV Forecast Tomorrow Sensor",
+          "battery_total_capacity_sensor": "Battery Total Capacity Sensor",
+          "winter_reserve_enabled": "Enable Winter Reserve",
+          "winter_min_soc": "Winter Minimum SOC (%)",
+          "winter_months": "Winter Months (CSV)"
+        },
+        "data_description": {
+          "pv_forecast_enabled": "Use PV forecast data to reduce unnecessary grid charging windows",
+          "pv_source": "Forecast data source profile",
+          "soc_target_sunrise": "Desired battery SOC target used for planning charge need",
+          "pv_forecast_remaining_today_sensor": "Forecasted remaining PV production for today in kWh",
+          "pv_forecast_tomorrow_sensor": "Forecasted total PV production for tomorrow in kWh",
+          "battery_total_capacity_sensor": "Battery usable capacity in kWh",
+          "winter_reserve_enabled": "Keep a minimum grid charge reserve during winter months",
+          "winter_min_soc": "Minimum SOC floor for winter reserve",
+          "winter_months": "Comma-separated month numbers (e.g. 11,12,1,2)"
+        }
+      },
       "battery_operations": {
         "title": "Battery Operations (Optional)",
         "description": "{info}",
@@ -258,6 +284,12 @@
         "same_as_discharge": "Same as discharge strategy",
         "subtract_base": "House first, export remainder",
         "already_included": "Export full discharge power"
+      }
+    },
+    "pv_source": {
+      "options": {
+        "solcast": "Solcast",
+        "generic": "Generic"
       }
     }
   }

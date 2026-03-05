@@ -88,6 +88,7 @@ The integration automatically normalizes different sensor formats through a prox
 - **📱 Smart Notifications**: Configurable notifications for all state changes with quiet hours support
 - **🛡️ SOC Safety Protection**: Automatic battery protection based on State of Charge limits
 - **💰 Price Override**: Automatically charge when prices drop below threshold, regardless of calculated windows
+- **☀️ PV Forecast-Aware Charging**: Reduces unnecessary grid charging using forecast PV energy with safe winter reserve fallback
 
 ### Core Features
 
@@ -159,6 +160,12 @@ During the configuration flow, you'll be asked to:
    - Charge power (Watts)
    - Discharge power (Watts)
    - Round-trip efficiency (%)
+
+6. **PV forecast settings** (optional):
+   - Enable/disable PV-aware optimization
+   - Configure forecast sensors for remaining today and tomorrow
+   - Configure battery capacity sensor and SOC target at sunrise
+   - Optional winter reserve (minimum SOC + winter month list)
 
 You can change the window duration anytime after setup using the `Pricing Window Duration` selector in the dashboard or entity settings.
 
@@ -246,38 +253,59 @@ The algorithm operates on either **15-minute or 1-hour intervals** depending on 
    - **Idle**: No conditions met
    - **Off**: Automation disabled
 
+### PV Forecast Adjustment (V1)
+
+When enabled, CEW adjusts the configured number of charging windows with a day-level PV energy estimate:
+
+1. Compute required energy from current SOC to target SOC at sunrise.
+2. Subtract forecast PV energy:
+   - Today: `pv_forecast_remaining_today_sensor`
+   - Tomorrow: `pv_forecast_tomorrow_sensor`
+3. Apply optional winter reserve floor (minimum SOC in configured winter months).
+4. Convert remaining required grid energy into charge windows.
+5. Clamp the result to `0..configured_charge_windows`.
+
+If required data is missing, CEW falls back safely to standard behavior and exposes `pv_fallback_reason` in sensor attributes.
+
 ### Entities Created
 
-The integration creates 64 configuration entities:
+The integration creates a broad set of configuration entities (including dashboard compatibility aliases and PV settings):
 
 #### Sensors
 - `sensor.cew_today`: Current state and window information for today
 - `sensor.cew_tomorrow`: Window information for tomorrow (when available)
 
-#### Input Numbers (24)
+#### Input Numbers
 - Window counts (charging, expensive)
 - Percentiles (cheap, expensive)
 - Spreads (minimum, discharge, aggressive)
 - Costs (VAT, tax, additional)
 - Battery parameters (power, efficiency)
 - Price overrides
+- Dashboard compatibility aliases (`percentile_threshold`, `min_profit_*`)
+- PV settings (`soc_target_sunrise`, `winter_min_soc`)
 
-#### Input Booleans (18)
+#### Input Booleans
 - Automation enable/disable
 - Notification settings
 - Time override enables
 - Tomorrow settings
+- PV optimization toggles (`pv_forecast_enabled`, `winter_reserve_enabled`)
+- Dashboard compatibility toggles (`min_buy_price_diff_enabled`)
 
-#### Input Selects (7)
+#### Input Selects
 - Window duration mode
 - Time override modes
+- Price formula compatibility select
+- PV source select
 
 #### Input DateTimes (14)
 - Time override periods
 - Quiet hours
 
-#### Input Text (1)
+#### Input Text
 - Price sensor entity ID
+- Battery/PV sensor references and winter months CSV
 
 ## Services
 
@@ -536,6 +564,19 @@ automation:
 - `completed_discharge_windows`: Number of completed discharge windows
 - `completed_charge_cost`: Total cost of charging today
 - `completed_discharge_revenue`: Total revenue from discharging today
+- `arbitrage_avg`: Dashboard-compatible arbitrage metric
+- `net_planned_charge_kwh`: Planned net charge energy
+- `net_planned_discharge_kwh`: Planned net discharge energy
+- `grouped_charge_windows`: Grouped contiguous charge windows for UI cards
+- `grouped_discharge_windows`: Grouped contiguous discharge windows for UI cards
+- `pv_adjustment_active`: Whether PV reduced planned grid windows
+- `configured_charge_windows`: Original configured charge windows
+- `pv_adjusted_charge_windows`: Charge windows after PV adjustment
+- `required_charge_kwh`: Energy needed to reach sunrise SOC target
+- `pv_offset_kwh`: Forecast PV energy offset applied
+- `net_grid_charge_kwh`: Remaining grid charge energy after PV offset
+- `winter_reserve_active`: Winter reserve floor currently active
+- `pv_fallback_reason`: Fallback reason if PV adjustment was skipped
 
 ## Dashboard Features
 

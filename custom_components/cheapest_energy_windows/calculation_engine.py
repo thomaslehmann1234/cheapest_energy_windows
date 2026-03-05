@@ -71,6 +71,8 @@ class WindowCalculationEngine:
         min_spread_discharge = config.get(f"min_spread_discharge{suffix}", 20)
         aggressive_spread = config.get(f"aggressive_discharge_spread{suffix}", 40)
         min_price_diff = config.get(f"min_price_difference{suffix}", 0.05)
+        if not config.get(f"min_buy_price_diff_enabled{suffix}", True):
+            min_price_diff = 0.0
 
         # Cost calculations
         vat = config.get("vat", 0.21)
@@ -177,6 +179,15 @@ class WindowCalculationEngine:
                     prices_for_discharge_calc = discharge_override_prices
                     _LOGGER.debug(f"Discharge mode: {len(charge_filtered)} prices for charging, {len(discharge_override_prices)} for discharge")
 
+        # PV forecast can reduce the number of grid charge windows
+        pv_adjustment = self._calculate_pv_adjusted_charge_windows(
+            prices_for_charge_calc,
+            num_charge_windows,
+            config,
+            is_tomorrow,
+        )
+        num_charge_windows = pv_adjustment["pv_adjusted_charge_windows"]
+
         # Find windows using the pre-filtered prices
         charge_windows = self._find_charge_windows(
             prices_for_charge_calc,  # Use filtered prices
@@ -228,7 +239,8 @@ class WindowCalculationEngine:
             aggressive_windows,
             current_state,
             config,
-            is_tomorrow
+            is_tomorrow,
+            pv_adjustment,
         )
 
         return result
@@ -415,6 +427,98 @@ class WindowCalculationEngine:
             return prices  # Return unfiltered on error
 
         return filtered
+
+    def _calculate_pv_adjusted_charge_windows(
+        self,
+        prices: List[Dict[str, Any]],
+        configured_charge_windows: int,
+        config: Dict[str, Any],
+        is_tomorrow: bool,
+    ) -> Dict[str, Any]:
+        """Reduce planned grid charge windows using PV forecast and SoC target."""
+        result = {
+            "pv_adjustment_active": False,
+            "pv_forecast_kwh_used": 0.0,
+            "soc_target_sunrise": float(config.get("soc_target_sunrise", 0)),
+            "current_soc": config.get("current_soc"),
+            "battery_capacity_kwh": config.get("battery_capacity_kwh"),
+            "required_charge_kwh": 0.0,
+            "pv_offset_kwh": 0.0,
+            "net_grid_charge_kwh": 0.0,
+            "configured_charge_windows": int(configured_charge_windows),
+            "pv_adjusted_charge_windows": int(configured_charge_windows),
+            "winter_reserve_active": False,
+            "pv_fallback_reason": "",
+        }
+
+        if not config.get("pv_forecast_enabled", False):
+            result["pv_fallback_reason"] = "disabled"
+            return result
+
+        current_soc = config.get("current_soc")
+        battery_capacity_kwh = config.get("battery_capacity_kwh")
+        if current_soc is None:
+            result["pv_fallback_reason"] = "missing_soc"
+            return result
+        if battery_capacity_kwh is None or battery_capacity_kwh <= 0:
+            result["pv_fallback_reason"] = "missing_capacity"
+            return result
+
+        pv_forecast_kwh = (
+            config.get("pv_forecast_tomorrow_kwh")
+            if is_tomorrow
+            else config.get("pv_forecast_remaining_today_kwh")
+        )
+        if pv_forecast_kwh is None or pv_forecast_kwh < 0:
+            result["pv_fallback_reason"] = "missing_pv"
+            return result
+
+        if not prices:
+            result["pv_fallback_reason"] = "missing_prices"
+            return result
+
+        charge_power_kw = float(config.get("charge_power", 0)) / 1000
+        window_duration_hours = prices[0]["duration"] / 60
+        energy_per_window_kwh = charge_power_kw * window_duration_hours
+        if energy_per_window_kwh <= 0:
+            result["pv_fallback_reason"] = "invalid_charge_power"
+            return result
+
+        soc_target = float(config.get("soc_target_sunrise", 0))
+        required_charge_kwh = max(0.0, ((soc_target - float(current_soc)) / 100.0) * float(battery_capacity_kwh))
+        pv_offset_kwh = min(required_charge_kwh, float(pv_forecast_kwh))
+        net_grid_charge_kwh = max(0.0, required_charge_kwh - pv_offset_kwh)
+
+        winter_reserve_active = False
+        if config.get("winter_reserve_enabled", False):
+            winter_months = config.get("winter_months_list", [11, 12, 1, 2])
+            reference_dt = dt_util.now() + timedelta(days=1 if is_tomorrow else 0)
+            current_month = reference_dt.month
+            if current_month in winter_months:
+                winter_reserve_active = True
+                winter_min_soc = float(config.get("winter_min_soc", 0))
+                winter_floor_kwh = max(
+                    0.0,
+                    ((winter_min_soc - float(current_soc)) / 100.0) * float(battery_capacity_kwh),
+                )
+                net_grid_charge_kwh = max(net_grid_charge_kwh, winter_floor_kwh)
+
+        adjusted_windows = int(np.ceil(net_grid_charge_kwh / energy_per_window_kwh)) if net_grid_charge_kwh > 0 else 0
+        adjusted_windows = max(0, min(int(configured_charge_windows), adjusted_windows))
+
+        result.update(
+            {
+                "pv_adjustment_active": adjusted_windows != int(configured_charge_windows),
+                "pv_forecast_kwh_used": round(pv_offset_kwh, 3),
+                "required_charge_kwh": round(required_charge_kwh, 3),
+                "pv_offset_kwh": round(pv_offset_kwh, 3),
+                "net_grid_charge_kwh": round(net_grid_charge_kwh, 3),
+                "pv_adjusted_charge_windows": adjusted_windows,
+                "winter_reserve_active": winter_reserve_active,
+                "pv_fallback_reason": "",
+            }
+        )
+        return result
 
     def _find_charge_windows(
         self,
@@ -796,6 +900,65 @@ class WindowCalculationEngine:
 
         return new_actual_charge, new_actual_discharge
 
+    def _group_windows(
+        self,
+        windows: List[Dict[str, Any]],
+        reference_price: float,
+        mode: str,
+    ) -> List[Dict[str, Any]]:
+        """Group contiguous windows for dashboard markdown cards."""
+        if not windows:
+            return []
+
+        sorted_windows = sorted(windows, key=lambda w: w["timestamp"])
+        groups: List[List[Dict[str, Any]]] = []
+        current_group: List[Dict[str, Any]] = []
+
+        for window in sorted_windows:
+            if not current_group:
+                current_group = [window]
+                continue
+
+            previous = current_group[-1]
+            previous_end = previous["timestamp"] + timedelta(minutes=previous["duration"])
+            if window["timestamp"] == previous_end:
+                current_group.append(window)
+            else:
+                groups.append(current_group)
+                current_group = [window]
+
+        if current_group:
+            groups.append(current_group)
+
+        grouped_result = []
+        for group in groups:
+            first = group[0]
+            last = group[-1]
+            prices = [float(item["price"]) for item in group]
+            avg_price = float(np.mean(prices)) if prices else 0.0
+            spread_pct = 0.0
+            if reference_price > 0 and avg_price > 0:
+                if mode == "charge":
+                    spread_pct = ((reference_price - avg_price) / avg_price) * 100
+                else:
+                    spread_pct = ((avg_price - reference_price) / reference_price) * 100
+
+            group_data = {
+                "start_time": first["timestamp"].strftime("%H:%M"),
+                "end_time": (last["timestamp"] + timedelta(minutes=last["duration"])).strftime("%H:%M"),
+                "num_windows": len(group),
+                "avg_price": round(avg_price, 5),
+                "spread_pct": round(spread_pct, 1),
+                "prices": prices,
+            }
+            if mode == "discharge":
+                group_data["avg_sell_price"] = round(avg_price, 5)
+                group_data["sell_prices"] = prices
+
+            grouped_result.append(group_data)
+
+        return grouped_result
+
     def _build_result(
         self,
         prices: List[Dict[str, Any]],
@@ -804,9 +967,26 @@ class WindowCalculationEngine:
         aggressive_windows: List[Dict[str, Any]],
         current_state: str,
         config: Dict[str, Any],
-        is_tomorrow: bool
+        is_tomorrow: bool,
+        pv_adjustment: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build the result dictionary with all attributes."""
+        suffix = "_tomorrow" if is_tomorrow and config.get("tomorrow_settings_enabled", False) else ""
+        pv_adjustment = pv_adjustment or {
+            "pv_adjustment_active": False,
+            "pv_forecast_kwh_used": 0.0,
+            "soc_target_sunrise": float(config.get("soc_target_sunrise", 0)),
+            "current_soc": config.get("current_soc"),
+            "battery_capacity_kwh": config.get("battery_capacity_kwh"),
+            "required_charge_kwh": 0.0,
+            "pv_offset_kwh": 0.0,
+            "net_grid_charge_kwh": 0.0,
+            "configured_charge_windows": int(config.get(f"charging_windows{suffix}", 0)),
+            "pv_adjusted_charge_windows": int(config.get(f"charging_windows{suffix}", 0)),
+            "winter_reserve_active": False,
+            "pv_fallback_reason": "disabled",
+        }
+
         now = dt_util.now()
         current_time = now.replace(second=0, microsecond=0)
         current_price = self._get_current_price(prices, current_time)
@@ -960,6 +1140,58 @@ class WindowCalculationEngine:
 
         planned_total_cost = round(planned_charge_cost + planned_base_usage_cost - planned_discharge_revenue, 3)
 
+        # Dashboard compatibility metrics
+        window_duration_hours = (prices[0]["duration"] / 60) if prices else 0.25
+        charge_power_kw = config.get("charge_power", 2400) / 1000
+        discharge_power_kw = config.get("discharge_power", 2400) / 1000
+        base_usage_kw = config.get("base_usage", 0) / 1000
+        effective_charge_power_kw = max(
+            0.0,
+            charge_power_kw - base_usage_kw if charge_strategy == "battery_covers_base" else charge_power_kw,
+        )
+
+        net_planned_charge_kwh = sum(
+            (w["duration"] / 60) * effective_charge_power_kw for w in actual_charge
+        )
+
+        net_planned_discharge_kwh = 0.0
+        for w in actual_discharge:
+            if w.get("state") == STATE_DISCHARGE_AGGRESSIVE:
+                strategy = aggressive_strategy if aggressive_strategy != "same_as_discharge" else discharge_strategy
+            else:
+                strategy = discharge_strategy
+            effective_discharge_power_kw = max(
+                0.0,
+                discharge_power_kw - base_usage_kw if strategy == "subtract_base" else discharge_power_kw,
+            )
+            net_planned_discharge_kwh += (w["duration"] / 60) * effective_discharge_power_kw
+
+        # Percentile compatibility averages
+        percentile_cheap_avg = 0.0
+        percentile_expensive_avg = 0.0
+        if prices:
+            cheap_percentile = float(config.get(f"cheap_percentile{suffix}", 25))
+            expensive_percentile = float(config.get(f"expensive_percentile{suffix}", 25))
+            price_array = np.array([p["price"] for p in prices])
+            cheap_threshold = np.percentile(price_array, cheap_percentile)
+            expensive_threshold = np.percentile(price_array, 100 - expensive_percentile)
+            cheap_values = price_array[price_array <= cheap_threshold]
+            expensive_values = price_array[price_array >= expensive_threshold]
+            percentile_cheap_avg = float(np.mean(cheap_values)) if cheap_values.size > 0 else 0.0
+            percentile_expensive_avg = float(np.mean(expensive_values)) if expensive_values.size > 0 else 0.0
+
+        # Group contiguous windows for markdown rendering
+        grouped_charge_windows = self._group_windows(
+            actual_charge,
+            percentile_expensive_avg,
+            mode="charge",
+        )
+        grouped_discharge_windows = self._group_windows(
+            actual_discharge,
+            percentile_cheap_avg if percentile_cheap_avg > 0 else avg_cheap,
+            mode="discharge",
+        )
+
         # Build result
         result = {
             "state": current_state,
@@ -973,6 +1205,7 @@ class WindowCalculationEngine:
             "actual_charge_prices": [float(w["price"]) for w in actual_charge],
             "actual_discharge_times": [w["timestamp"].isoformat() for w in actual_discharge],
             "actual_discharge_prices": [float(w["price"]) for w in actual_discharge],
+            "actual_discharge_sell_prices": [float(w["price"]) for w in actual_discharge],
             "completed_charge_windows": completed_charge,
             "completed_discharge_windows": completed_discharge,
             "completed_charge_cost": round(completed_charge_cost, 3),
@@ -982,22 +1215,45 @@ class WindowCalculationEngine:
             "total_cost": round(completed_charge_cost + completed_base_usage_cost - completed_discharge_revenue, 3),
             "planned_total_cost": planned_total_cost,
             "num_windows": len(charge_windows),
-            "min_spread_required": config.get("min_spread", 10),
+            "min_spread_required": config.get(f"min_spread{suffix}", 10),
             "spread_percentage": round(spread_pct, 1),
-            "spread_met": bool(spread_pct >= config.get("min_spread", 10)),
+            "spread_met": bool(spread_pct >= config.get(f"min_spread{suffix}", 10)),
             "spread_avg": round(spread_pct, 1),
+            "arbitrage_avg": round(spread_pct, 1),
             "actual_spread_avg": round(spread_pct, 1),
-            "discharge_spread_met": bool(spread_pct >= config.get("min_spread_discharge", 20)),
-            "aggressive_discharge_spread_met": bool(spread_pct >= config.get("aggressive_discharge_spread", 40)),
+            "discharge_spread_met": bool(spread_pct >= config.get(f"min_spread_discharge{suffix}", 20)),
+            "aggressive_discharge_spread_met": bool(spread_pct >= config.get(f"aggressive_discharge_spread{suffix}", 40)),
             "avg_cheap_price": round(avg_cheap, 5),
             "avg_expensive_price": round(avg_expensive, 5),
+            "percentile_cheap_avg": round(percentile_cheap_avg, 5),
+            "percentile_expensive_avg": round(percentile_expensive_avg, 5),
             "current_price": round(current_price, 5) if current_price else 0,
-            "price_override_active": config.get("price_override_enabled", False) and
+            "price_override_active": config.get(f"price_override_enabled{suffix}", False) and
                                     current_price and
-                                    current_price <= config.get("price_override_threshold", 0.15),
-            "time_override_active": config.get("time_override_enabled", False),
+                                    current_price <= config.get(f"price_override_threshold{suffix}", 0.15),
+            "time_override_active": config.get(f"time_override_enabled{suffix}", False),
             "automation_enabled": config.get("automation_enabled", True),
-            "calculation_window_enabled": config.get("calculation_window_enabled", False),
+            "calculation_window_enabled": config.get(f"calculation_window_enabled{suffix}", False),
+            "net_planned_charge_kwh": round(net_planned_charge_kwh, 3),
+            "net_planned_discharge_kwh": round(net_planned_discharge_kwh, 3),
+            "grouped_charge_windows": grouped_charge_windows,
+            "grouped_discharge_windows": grouped_discharge_windows,
+            "window_duration_hours": round(window_duration_hours, 4),
+            "charge_power_kw": round(charge_power_kw, 3),
+            "discharge_power_kw": round(discharge_power_kw, 3),
+            "base_usage_kw": round(base_usage_kw, 3),
+            "pv_adjustment_active": pv_adjustment.get("pv_adjustment_active", False),
+            "pv_forecast_kwh_used": pv_adjustment.get("pv_forecast_kwh_used", 0.0),
+            "soc_target_sunrise": pv_adjustment.get("soc_target_sunrise", 0.0),
+            "current_soc": pv_adjustment.get("current_soc"),
+            "battery_capacity_kwh": pv_adjustment.get("battery_capacity_kwh"),
+            "required_charge_kwh": pv_adjustment.get("required_charge_kwh", 0.0),
+            "pv_offset_kwh": pv_adjustment.get("pv_offset_kwh", 0.0),
+            "net_grid_charge_kwh": pv_adjustment.get("net_grid_charge_kwh", 0.0),
+            "configured_charge_windows": pv_adjustment.get("configured_charge_windows", 0),
+            "pv_adjusted_charge_windows": pv_adjustment.get("pv_adjusted_charge_windows", 0),
+            "winter_reserve_active": pv_adjustment.get("winter_reserve_active", False),
+            "pv_fallback_reason": pv_adjustment.get("pv_fallback_reason", ""),
         }
 
         return result
@@ -1016,6 +1272,7 @@ class WindowCalculationEngine:
             "actual_charge_prices": [],
             "actual_discharge_times": [],
             "actual_discharge_prices": [],
+            "actual_discharge_sell_prices": [],
             "completed_charge_windows": 0,
             "completed_discharge_windows": 0,
             "completed_charge_cost": 0,
@@ -1029,14 +1286,37 @@ class WindowCalculationEngine:
             "spread_percentage": 0,
             "spread_met": False,
             "spread_avg": 0,
+            "arbitrage_avg": 0,
             "actual_spread_avg": 0,
             "discharge_spread_met": False,
             "aggressive_discharge_spread_met": False,
             "avg_cheap_price": 0,
             "avg_expensive_price": 0,
+            "percentile_cheap_avg": 0,
+            "percentile_expensive_avg": 0,
             "current_price": 0,
             "price_override_active": False,
             "time_override_active": False,
             "automation_enabled": False,
             "calculation_window_enabled": False,
+            "net_planned_charge_kwh": 0,
+            "net_planned_discharge_kwh": 0,
+            "grouped_charge_windows": [],
+            "grouped_discharge_windows": [],
+            "window_duration_hours": 0,
+            "charge_power_kw": 0,
+            "discharge_power_kw": 0,
+            "base_usage_kw": 0,
+            "pv_adjustment_active": False,
+            "pv_forecast_kwh_used": 0,
+            "soc_target_sunrise": 0,
+            "current_soc": None,
+            "battery_capacity_kwh": None,
+            "required_charge_kwh": 0,
+            "pv_offset_kwh": 0,
+            "net_grid_charge_kwh": 0,
+            "configured_charge_windows": 0,
+            "pv_adjusted_charge_windows": 0,
+            "winter_reserve_active": False,
+            "pv_fallback_reason": "disabled",
         }

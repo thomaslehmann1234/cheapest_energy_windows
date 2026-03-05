@@ -17,6 +17,7 @@ Perfect for users with:
 - **Automatic Window Detection** - Finds optimal charge/discharge times
 - **Statistical Analysis** - Uses percentile-based selection for accuracy
 - **Battery Optimization** - Considers round-trip efficiency
+- **PV Forecast Optimization** - Reduces grid charging when forecast solar can cover demand
 - **Dual-Day Management** - Different settings for today/tomorrow
 - **Time Overrides** - Force charging during specific periods
 - **Full Dashboard** - Complete control interface included

@@ -58,6 +58,17 @@ DEFAULT_BASE_USAGE_CHARGE_STRATEGY: Final = "grid_covers_both"
 DEFAULT_BASE_USAGE_IDLE_STRATEGY: Final = "battery_covers"
 DEFAULT_BASE_USAGE_DISCHARGE_STRATEGY: Final = "subtract_base"
 DEFAULT_BASE_USAGE_AGGRESSIVE_STRATEGY: Final = "same_as_discharge"
+DEFAULT_MIN_BUY_PRICE_DIFF_ENABLED: Final = True
+DEFAULT_PRICE_FORMULA: Final = "separate_sell"
+DEFAULT_PV_FORECAST_ENABLED: Final = False
+DEFAULT_PV_SOURCE: Final = "solcast"
+DEFAULT_SOC_TARGET_SUNRISE: Final = 70
+DEFAULT_PV_FORECAST_REMAINING_TODAY_SENSOR: Final = "sensor.solcast_pv_forecast_forecast_remaining_today"
+DEFAULT_PV_FORECAST_TOMORROW_SENSOR: Final = "sensor.solcast_pv_forecast_forecast_tomorrow"
+DEFAULT_BATTERY_TOTAL_CAPACITY_SENSOR: Final = "not_configured"
+DEFAULT_WINTER_RESERVE_ENABLED: Final = True
+DEFAULT_WINTER_MIN_SOC: Final = 25
+DEFAULT_WINTER_MONTHS: Final = "11,12,1,2"
 
 # Base usage strategy options
 BASE_USAGE_CHARGE_OPTIONS: Final = ["grid_covers_both", "battery_covers_base"]
@@ -103,6 +114,7 @@ ATTR_ACTUAL_CHARGE_TIMES: Final = "actual_charge_times"
 ATTR_ACTUAL_CHARGE_PRICES: Final = "actual_charge_prices"
 ATTR_ACTUAL_DISCHARGE_TIMES: Final = "actual_discharge_times"
 ATTR_ACTUAL_DISCHARGE_PRICES: Final = "actual_discharge_prices"
+ATTR_ACTUAL_DISCHARGE_SELL_PRICES: Final = "actual_discharge_sell_prices"
 ATTR_COMPLETED_CHARGE_WINDOWS: Final = "completed_charge_windows"
 ATTR_COMPLETED_DISCHARGE_WINDOWS: Final = "completed_discharge_windows"
 ATTR_COMPLETED_CHARGE_COST: Final = "completed_charge_cost"
@@ -116,6 +128,7 @@ ATTR_MIN_SPREAD_REQUIRED: Final = "min_spread_required"
 ATTR_SPREAD_PERCENTAGE: Final = "spread_percentage"
 ATTR_SPREAD_MET: Final = "spread_met"
 ATTR_SPREAD_AVG: Final = "spread_avg"
+ATTR_ARBITRAGE_AVG: Final = "arbitrage_avg"
 ATTR_ACTUAL_SPREAD_AVG: Final = "actual_spread_avg"
 ATTR_DISCHARGE_SPREAD_MET: Final = "discharge_spread_met"
 ATTR_AGGRESSIVE_DISCHARGE_SPREAD_MET: Final = "aggressive_discharge_spread_met"
@@ -124,6 +137,28 @@ ATTR_AVG_EXPENSIVE_PRICE: Final = "avg_expensive_price"
 ATTR_CURRENT_PRICE: Final = "current_price"
 ATTR_PRICE_OVERRIDE_ACTIVE: Final = "price_override_active"
 ATTR_TIME_OVERRIDE_ACTIVE: Final = "time_override_active"
+ATTR_NET_PLANNED_CHARGE_KWH: Final = "net_planned_charge_kwh"
+ATTR_NET_PLANNED_DISCHARGE_KWH: Final = "net_planned_discharge_kwh"
+ATTR_GROUPED_CHARGE_WINDOWS: Final = "grouped_charge_windows"
+ATTR_GROUPED_DISCHARGE_WINDOWS: Final = "grouped_discharge_windows"
+ATTR_WINDOW_DURATION_HOURS: Final = "window_duration_hours"
+ATTR_CHARGE_POWER_KW: Final = "charge_power_kw"
+ATTR_DISCHARGE_POWER_KW: Final = "discharge_power_kw"
+ATTR_BASE_USAGE_KW: Final = "base_usage_kw"
+ATTR_PERCENTILE_CHEAP_AVG: Final = "percentile_cheap_avg"
+ATTR_PERCENTILE_EXPENSIVE_AVG: Final = "percentile_expensive_avg"
+ATTR_PV_ADJUSTMENT_ACTIVE: Final = "pv_adjustment_active"
+ATTR_PV_FORECAST_KWH_USED: Final = "pv_forecast_kwh_used"
+ATTR_SOC_TARGET_SUNRISE: Final = "soc_target_sunrise"
+ATTR_CURRENT_SOC: Final = "current_soc"
+ATTR_BATTERY_CAPACITY_KWH: Final = "battery_capacity_kwh"
+ATTR_REQUIRED_CHARGE_KWH: Final = "required_charge_kwh"
+ATTR_PV_OFFSET_KWH: Final = "pv_offset_kwh"
+ATTR_NET_GRID_CHARGE_KWH: Final = "net_grid_charge_kwh"
+ATTR_CONFIGURED_CHARGE_WINDOWS: Final = "configured_charge_windows"
+ATTR_PV_ADJUSTED_CHARGE_WINDOWS: Final = "pv_adjusted_charge_windows"
+ATTR_WINTER_RESERVE_ACTIVE: Final = "winter_reserve_active"
+ATTR_PV_FALLBACK_REASON: Final = "pv_fallback_reason"
 
 # Service names
 SERVICE_ROTATE_SETTINGS: Final = "rotate_tomorrow_settings"
@@ -146,7 +181,13 @@ CALCULATION_AFFECTING_KEYS: Final = {
     "min_spread",
     "min_spread_discharge",
     "aggressive_discharge_spread",
+    "min_profit_charge",
+    "min_profit_discharge",
+    "min_profit_discharge_aggressive",
+    "percentile_threshold",
     "min_price_difference",
+    "min_buy_price_diff_enabled",
+    "price_formula",
 
     # Cost factors
     "vat",
@@ -176,6 +217,15 @@ CALCULATION_AFFECTING_KEYS: Final = {
     "time_override_start",
     "time_override_end",
     "time_override_mode",
+    "pv_forecast_enabled",
+    "pv_source",
+    "soc_target_sunrise",
+    "pv_forecast_remaining_today_sensor",
+    "pv_forecast_tomorrow_sensor",
+    "battery_total_capacity_sensor",
+    "winter_reserve_enabled",
+    "winter_min_soc",
+    "winter_months",
 
     # Calculation window (restrict price analysis to time range)
     "calculation_window_enabled",
@@ -191,7 +241,12 @@ CALCULATION_AFFECTING_KEYS: Final = {
     "min_spread_tomorrow",
     "min_spread_discharge_tomorrow",
     "aggressive_discharge_spread_tomorrow",
+    "min_profit_charge_tomorrow",
+    "min_profit_discharge_tomorrow",
+    "min_profit_discharge_aggressive_tomorrow",
+    "percentile_threshold_tomorrow",
     "min_price_difference_tomorrow",
+    "min_buy_price_diff_enabled_tomorrow",
     "price_override_enabled_tomorrow",
     "price_override_threshold_tomorrow",
     "time_override_enabled_tomorrow",
